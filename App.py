@@ -31,8 +31,24 @@ def init_db(client, sheet_name):
     try:
         sh = client.open(sheet_name)
     except gspread.SpreadsheetNotFound:
-        st.error(f"File '{sheet_name}' non trovato su Google Drive.")
+        st.error(f"File '{sheet_name}' non trovato su Google Drive. Assicurati di averlo creato e condiviso con l'email del bot.")
         st.stop()
+
+    # Definizione delle colonne necessarie (Auto-creazione se mancano i fogli)
+    needed_sheets = {
+        "Magazzino": ["ID_Tag", "Categoria", "Descrizione", "Stato", "Posizione", "Canali_Raw", "Prezzo_Ipotetico", "Prezzo_Minimo", "Data_Ins"],
+        "Vendite": ["ID_Tag", "Descrizione", "Piattaforma", "Lordo_Incassato", "Spese_Sped", "Netto_Finale", "Spedito", "Incassato", "Venditore", "Data_Vendita", "Data_Incasso"],
+        "Spese": ["Data", "Categoria", "Descrizione", "Importo", "Pagato_Da"]
+    }
+
+    # Controllo e creazione automatica fogli mancanti
+    for s_name, cols in needed_sheets.items():
+        try:
+            ws = sh.worksheet(s_name)
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(s_name, rows=100, cols=15)
+            ws.append_row(cols)
+            
     return sh
 
 # --- UTILS ---
@@ -164,37 +180,38 @@ def main():
                 for i, row in enumerate(current_data):
                     tag = row['ID_Tag']
                     # Troviamo la riga corrispondente nell'editor
-                    edited_row = edited_df[edited_df['ID_Tag'] == tag].iloc[0]
-                    
-                    new_spedito = bool(edited_row['Spedito'])
-                    new_incassato = bool(edited_row['Incassato'])
-                    
-                    # Gestione Data Incasso
-                    old_incassato = str(row['Incassato']).upper() == 'TRUE'
-                    data_incasso = row.get('Data_Incasso', '') # Prende valore vecchio o vuoto
-                    
-                    if new_incassato and not old_incassato:
-                        # Se è passato da False a True ora -> Metti data oggi
-                        data_incasso = datetime.now().strftime("%Y-%m-%d")
-                    elif not new_incassato:
-                        # Se è tornato False -> Cancella data
-                        data_incasso = ""
+                    if tag in edited_df['ID_Tag'].values:
+                        edited_row = edited_df[edited_df['ID_Tag'] == tag].iloc[0]
+                        
+                        new_spedito = bool(edited_row['Spedito'])
+                        new_incassato = bool(edited_row['Incassato'])
+                        
+                        # Gestione Data Incasso
+                        old_incassato = str(row['Incassato']).upper() == 'TRUE'
+                        data_incasso = row.get('Data_Incasso', '') # Prende valore vecchio o vuoto
+                        
+                        if new_incassato and not old_incassato:
+                            # Se è passato da False a True ora -> Metti data oggi
+                            data_incasso = datetime.now().strftime("%Y-%m-%d")
+                        elif not new_incassato:
+                            # Se è tornato False -> Cancella data
+                            data_incasso = ""
 
-                    # Aggiorniamo la riga in memoria
-                    row['Spedito'] = new_spedito
-                    row['Incassato'] = new_incassato
-                    row['Data_Incasso'] = data_incasso
+                        # Aggiorniamo la riga in memoria
+                        row['Spedito'] = new_spedito
+                        row['Incassato'] = new_incassato
+                        row['Data_Incasso'] = data_incasso
+                    
                     updated_rows.append(list(row.values()))
                 
                 # Scrittura su Google Sheet (Riscriviamo tutto per sicurezza e ordine)
-                # Otteniamo le chiavi (header) dal primo record
-                headers = list(current_data[0].keys())
-                ws_ven.clear()
-                ws_ven.append_row(headers)
-                ws_ven.append_rows(updated_rows)
-                
-                st.success("Stati e Date aggiornati!")
-                st.rerun()
+                if updated_rows:
+                    headers = list(current_data[0].keys())
+                    ws_ven.clear()
+                    ws_ven.append_row(headers)
+                    ws_ven.append_rows(updated_rows)
+                    st.success("Stati e Date aggiornati!")
+                    st.rerun()
         else:
             st.info("Nessuna vendita registrata.")
 
@@ -248,7 +265,7 @@ def main():
             if st.form_submit_button("Salva in Magazzino"):
                 ws_mag.append_row([
                     id_tag, "GENERICO", desc, "Buono", pos, ",".join(chans), 
-                    "Disponibile", p_ipo, p_min, datetime.now().strftime("%Y-%m-%d")
+                    p_ipo, p_min, datetime.now().strftime("%Y-%m-%d")
                 ])
                 st.success("Salvato!")
 
@@ -288,7 +305,7 @@ def main():
         else:
             st.warning("Magazzino vuoto.")
 
-    # --- PAGINA 5: RESI (NUOVA) ---
+    # --- PAGINA 5: RESI ---
     elif menu == "🔙 Gestione Resi":
         st.header("Gestione Resi e Annullamenti")
         st.warning("Usa questa funzione se un cliente restituisce un prodotto o se hai registrato una vendita per errore.")
@@ -311,16 +328,14 @@ def main():
             
             if st.button("🔄 EFFETTUA RESO (Ripristina in Magazzino)"):
                 # 1. Aggiungi di nuovo a Magazzino
-                # Recuperiamo dati parziali dalla vendita, altri resettati
                 ws_mag.append_row([
                     tag_reso, 
-                    "Reso", # Categoria generica o recuperata se complichiamo il DB
+                    "Reso", 
                     row_reso['Descrizione'] + f" [RESO: {motivo}]", 
                     nuovo_stato, 
-                    "Magazzino", # Torna in magazzino
-                    "", # Canali azzerati
-                    "Disponibile", 
-                    0, 0, # Prezzi target resettati o da reinserire
+                    "Magazzino", 
+                    "", 
+                    0, 0, # Prezzi target resettati
                     datetime.now().strftime("%Y-%m-%d")
                 ])
                 
